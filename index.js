@@ -3,78 +3,114 @@ const app = express();
 
 app.use(express.json());
 
-/* ✅ Root route (fixes "Cannot GET /") */
 app.get('/', (req, res) => {
   res.send('LoadCalcPro API is live');
 });
 
-/* ✅ Your calculator endpoint */
 app.post('/calculate', (req, res) => {
-  const {
-    sqft,
-    appliances,
-    ac_qty,
-    ac_va,
-    heat_qty,
-    heat_va,
-    car_charger_va,
-    voltage
-  } = req.body;
+  try {
+    const {
+      sqft = 0,
+      sa_q = 0,
+      l_q = 0,
+      appliances = [],
+      custom_app = {},
+      hvac_pairs = [],
+      h40 = {},
+      ev = {},
+      continuous = {},
+      voltage = 240
+    } = req.body;
 
-  const generalLoad = (sqft * 3) + 3000 + 1500;
+    const sqVA = Number(sqft) * 3;
+    const saVA = Number(sa_q) * 1500;
+    const laVA = Number(l_q) * 1500;
 
-  let applianceTotal = 0;
-  let managedTotal = 0;
+    let appSum = 0;
+    let checkedVA = 0;
 
-  appliances.forEach(app => {
-    if (app.managed) {
-      managedTotal += app.va;
-    } else {
-      applianceTotal += app.va;
+    appliances.forEach(item => {
+      const qty = Number(item.qty) || 0;
+      const va = Number(item.va) || 0;
+      const total = qty * va;
+      appSum += total;
+      if (item.gen) checkedVA += total;
+    });
+
+    const customAppTotal =
+      (Number(custom_app.qty) || 0) * (Number(custom_app.va) || 0);
+    appSum += customAppTotal;
+    if (custom_app.gen) checkedVA += customAppTotal;
+
+    const combinedGeneral = sqVA + saVA + laVA + appSum;
+
+    const totalGeneralDerated =
+      Math.min(combinedGeneral, 10000) +
+      Math.max(combinedGeneral - 10000, 0) * 0.4;
+
+    let totalAC = 0;
+    let totalHeat65 = 0;
+
+    hvac_pairs.forEach(pair => {
+      totalAC += (Number(pair.ac_qty) || 0) * (Number(pair.ac_va) || 0);
+      totalHeat65 +=
+        (Number(pair.ht_qty) || 0) * (Number(pair.ht_va) || 0) * 0.65;
+    });
+
+    const h40VA =
+      (Number(h40.qty) || 0) * (Number(h40.va) || 0) * 0.4;
+
+    const finalHVAC = Math.max(totalAC, totalHeat65, h40VA);
+
+    if (h40.gen || hvac_pairs.some(p => p.gen)) {
+      checkedVA += finalHVAC;
     }
-  });
 
-  const combinedLoad = generalLoad + applianceTotal;
+    const evBase = Math.max(7200, Number(ev.va) || 0);
+    const evVA = (Number(ev.qty) || 0) * evBase;
+    if (ev.gen) checkedVA += evVA;
 
-  let demandLoad;
-  if (combinedLoad <= 10000) {
-    demandLoad = combinedLoad;
-  } else {
-    demandLoad = 10000 + ((combinedLoad - 10000) * 0.4);
+    const contVA =
+      (Number(continuous.qty) || 0) * (Number(continuous.va) || 0);
+    if (continuous.gen) checkedVA += contVA;
+
+    const totalServiceVA =
+      totalGeneralDerated + finalHVAC + evVA + contVA;
+
+    const volts = Number(voltage) || 240;
+    const serviceAmps = totalServiceVA / volts;
+
+    const generatorVA = totalServiceVA - checkedVA;
+    const generatorAmps = generatorVA / volts;
+
+    res.json({
+      success: true,
+      totals: {
+        sqVA: Math.round(sqVA),
+        saVA: Math.round(saVA),
+        laVA: Math.round(laVA),
+        combinedGeneral: Math.round(combinedGeneral),
+        totalGeneralDerated: Math.round(totalGeneralDerated),
+        finalHVAC: Math.round(finalHVAC),
+        evVA: Math.round(evVA),
+        contVA: Math.round(contVA),
+        totalServiceVA: Math.round(totalServiceVA),
+        serviceAmps: Math.round(serviceAmps),
+        generatorVA: Math.round(generatorVA),
+        generatorAmps: Math.round(generatorAmps)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Calculation failed',
+      details: error.message
+    });
   }
-
-  const acLoad = ac_qty * ac_va;
-  const heatLoad = heat_qty * heat_va;
-
-  let adjustedHeat;
-
-  if (heat_qty >= 4 && heatLoad > acLoad) {
-    adjustedHeat = heatLoad * 0.4;
-  } else {
-    adjustedHeat = heatLoad * 0.65;
-  }
-
-  const hvacLoad = Math.max(acLoad, adjustedHeat);
-
-  const carChargerAdjusted = car_charger_va * 1.25;
-
-  const totalVA =
-    demandLoad +
-    hvacLoad +
-    managedTotal +
-    carChargerAdjusted;
-
-  const amps = totalVA / voltage;
-
-  res.json({
-    totalVA,
-    amps: Math.round(amps)
-  });
 });
 
-/* ✅ CRITICAL FIX for Render */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`HCML API running on port ${PORT}`);
+  console.log(`LoadCalcPro API running on port ${PORT}`);
 });
