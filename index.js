@@ -8,6 +8,7 @@ const PORT = process.env.PORT || 3000;
 const MEMBERS_FILE = path.join(__dirname, "active_members.json");
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -76,6 +77,51 @@ function saveMembers(members) {
   fs.writeFileSync(MEMBERS_FILE, JSON.stringify(members, null, 2));
 }
 
+function addMember(email) {
+  const clean = cleanEmail(email);
+  const members = loadMembers();
+
+  if (isValidEmail(clean) && !members.includes(clean)) {
+    members.push(clean);
+    saveMembers(members);
+  }
+
+  return clean;
+}
+
+function removeMember(email) {
+  const clean = cleanEmail(email);
+  const members = loadMembers();
+  const updatedMembers = members.filter(member => member !== clean);
+  saveMembers(updatedMembers);
+  return clean;
+}
+
+function findEmailInPayload(body) {
+  return (
+    body.email ||
+    body.customer_email ||
+    body.buyer_email ||
+    body.payer_email ||
+    body.customer?.email ||
+    body.buyer?.email ||
+    body.subscription?.customer_email ||
+    body.data?.email ||
+    body.data?.customer_email ||
+    ""
+  );
+}
+
+function findEventType(body) {
+  return (
+    body.event ||
+    body.event_type ||
+    body.type ||
+    body.webhook_event ||
+    ""
+  );
+}
+
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
@@ -120,6 +166,56 @@ app.post("/api/access", (req, res) => {
   });
 });
 
+app.post("/payhip-webhook", (req, res) => {
+  console.log("Payhip webhook received:", JSON.stringify(req.body, null, 2));
+
+  const eventType = findEventType(req.body);
+  const email = cleanEmail(findEmailInPayload(req.body));
+
+  if (!isValidEmail(email)) {
+    return res.status(400).json({
+      success: false,
+      message: "No valid email found in Payhip webhook."
+    });
+  }
+
+  if (
+    eventType === "paid" ||
+    eventType === "subscription.created" ||
+    eventType === "subscription_created"
+  ) {
+    addMember(email);
+
+    return res.json({
+      success: true,
+      action: "member_added",
+      email
+    });
+  }
+
+  if (
+    eventType === "subscription.deleted" ||
+    eventType === "subscription_deleted" ||
+    eventType === "subscription.cancelled" ||
+    eventType === "subscription_canceled"
+  ) {
+    removeMember(email);
+
+    return res.json({
+      success: true,
+      action: "member_removed",
+      email
+    });
+  }
+
+  return res.json({
+    success: true,
+    action: "ignored",
+    eventType,
+    email
+  });
+});
+
 app.post("/api/add-member", (req, res) => {
   const email = cleanEmail(req.body.email);
 
@@ -130,12 +226,7 @@ app.post("/api/add-member", (req, res) => {
     });
   }
 
-  const members = loadMembers();
-
-  if (!members.includes(email)) {
-    members.push(email);
-    saveMembers(members);
-  }
+  addMember(email);
 
   res.json({
     success: true,
@@ -146,11 +237,7 @@ app.post("/api/add-member", (req, res) => {
 
 app.post("/api/remove-member", (req, res) => {
   const email = cleanEmail(req.body.email);
-
-  const members = loadMembers();
-  const updatedMembers = members.filter(member => member !== email);
-
-  saveMembers(updatedMembers);
+  removeMember(email);
 
   res.json({
     success: true,
