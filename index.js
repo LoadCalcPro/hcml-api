@@ -8,11 +8,19 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY;
 
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error(
     "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variable."
   );
   process.exit(1);
+}
+
+if (!ADMIN_API_KEY) {
+  console.warn(
+    "ADMIN_API_KEY is not set. Manual member management routes will be disabled."
+  );
 }
 
 const supabase = createClient(
@@ -26,8 +34,15 @@ const supabase = createClient(
   }
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.disable("x-powered-by");
+
+app.use(express.json({ limit: "100kb" }));
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: "100kb"
+  })
+);
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -37,7 +52,7 @@ app.use((req, res, next) => {
   );
   res.header(
     "Access-Control-Allow-Headers",
-    "Content-Type"
+    "Content-Type, X-Admin-Key"
   );
 
   if (req.method === "OPTIONS") {
@@ -111,6 +126,29 @@ function findEventType(body) {
   )
     .trim()
     .toLowerCase();
+}
+
+function requireAdminKey(req, res, next) {
+  if (!ADMIN_API_KEY) {
+    return res.status(503).json({
+      success: false,
+      message:
+        "Manual member management is not configured."
+    });
+  }
+
+  const providedKey = String(
+    req.get("X-Admin-Key") || ""
+  ).trim();
+
+  if (!providedKey || providedKey !== ADMIN_API_KEY) {
+    return res.status(401).json({
+      success: false,
+      message: "Unauthorized."
+    });
+  }
+
+  next();
 }
 
 async function findMember(email) {
@@ -278,10 +316,7 @@ app.post("/api/access", async (req, res) => {
 
 app.post("/payhip-webhook", async (req, res) => {
   try {
-    console.log(
-      "Payhip webhook received:",
-      JSON.stringify(req.body, null, 2)
-    );
+    console.log("Payhip webhook received.");
 
     const eventType = findEventType(req.body);
     const email = cleanEmail(
@@ -312,6 +347,7 @@ app.post("/payhip-webhook", async (req, res) => {
       "subscription.deleted",
       "subscription_deleted",
       "subscription.cancelled",
+      "subscription.canceled",
       "subscription_canceled",
       "subscription_cancelled",
       "subscription.deactivated",
@@ -359,80 +395,81 @@ app.post("/payhip-webhook", async (req, res) => {
   }
 });
 
-/*
-  These two routes are useful for testing.
+app.post(
+  "/api/add-member",
+  requireAdminKey,
+  async (req, res) => {
+    try {
+      const email = cleanEmail(req.body?.email);
 
-  They should not be left publicly available permanently
-  unless an admin password or other security check is added.
-*/
+      if (!isValidEmail(email)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid email."
+        });
+      }
 
-app.post("/api/add-member", async (req, res) => {
-  try {
-    const email = cleanEmail(req.body?.email);
+      if (isFakeEmail(email)) {
+        return res.status(400).json({
+          success: false,
+          message: "This email address cannot be used."
+        });
+      }
 
-    if (!isValidEmail(email)) {
-      return res.status(400).json({
+      const member =
+        await addOrReactivateMember(email);
+
+      return res.json({
+        success: true,
+        message: "Member activated.",
+        email: member.email,
+        active: member.active
+      });
+    } catch (error) {
+      console.error("Add-member failed:", error);
+
+      return res.status(500).json({
         success: false,
-        message: "Invalid email."
+        message: "Unable to add member."
       });
     }
-
-    if (isFakeEmail(email)) {
-      return res.status(400).json({
-        success: false,
-        message: "This email address cannot be used."
-      });
-    }
-
-    const member =
-      await addOrReactivateMember(email);
-
-    return res.json({
-      success: true,
-      message: "Member activated.",
-      email: member.email,
-      active: member.active
-    });
-  } catch (error) {
-    console.error("Add-member failed:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Unable to add member."
-    });
   }
-});
+);
 
-app.post("/api/remove-member", async (req, res) => {
-  try {
-    const email = cleanEmail(req.body?.email);
+app.post(
+  "/api/remove-member",
+  requireAdminKey,
+  async (req, res) => {
+    try {
+      const email = cleanEmail(req.body?.email);
 
-    if (!isValidEmail(email)) {
-      return res.status(400).json({
+      if (!isValidEmail(email)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid email."
+        });
+      }
+
+      const member = await deactivateMember(email);
+
+      return res.json({
+        success: true,
+        message: member
+          ? "Member deactivated."
+          : "Member was not found.",
+        email,
+        active: false
+      });
+    } catch (error) {
+      console.error("Remove-member failed:", error);
+
+      return res.status(500).json({
         success: false,
-        message: "Invalid email."
+        message: "Unable to deactivate member."
       });
     }
-
-    const member = await deactivateMember(email);
-
-    return res.json({
-      success: true,
-      message: member
-        ? "Member deactivated."
-        : "Member was not found.",
-      email,
-      active: false
-    });
-  } catch (error) {
-    console.error("Remove-member failed:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Unable to deactivate member."
-    });
   }
-});
+);
 
 app.use((req, res) => {
   res.status(404).json({
