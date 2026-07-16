@@ -37,6 +37,7 @@ const supabase = createClient(
 app.disable("x-powered-by");
 
 app.use(express.json({ limit: "100kb" }));
+
 app.use(
   express.urlencoded({
     extended: true,
@@ -46,10 +47,12 @@ app.use(
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
+
   res.header(
     "Access-Control-Allow-Methods",
     "GET, POST, OPTIONS"
   );
+
   res.header(
     "Access-Control-Allow-Headers",
     "Content-Type, X-Admin-Key"
@@ -128,6 +131,126 @@ function findEventType(body) {
     .toLowerCase();
 }
 
+function findProductName(body) {
+  const directName =
+    body?.product_name ||
+    body?.product?.name ||
+    body?.subscription?.product_name ||
+    body?.data?.product_name ||
+    body?.data?.product?.name;
+
+  if (directName) {
+    return String(directName).trim();
+  }
+
+  if (
+    Array.isArray(body?.items) &&
+    body.items.length > 0
+  ) {
+    return String(
+      body.items[0]?.product_name || ""
+    ).trim();
+  }
+
+  if (
+    Array.isArray(body?.data?.items) &&
+    body.data.items.length > 0
+  ) {
+    return String(
+      body.data.items[0]?.product_name || ""
+    ).trim();
+  }
+
+  return "";
+}
+
+function normalizeAccessType(value) {
+  const text = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    text === "aic" ||
+    text === "aic-calculator" ||
+    text === "aic calculator" ||
+    text.includes("available fault current")
+  ) {
+    return "aic";
+  }
+
+  if (
+    text === "generator" ||
+    text === "generator-nec2023" ||
+    text === "optional-generator" ||
+    text === "optional method generator calculator" ||
+    text === "optional method & generator calculator" ||
+    text.includes("optional method") ||
+    text.includes("generator")
+  ) {
+    return "generator";
+  }
+
+  if (
+    text === "both" ||
+    text === "bundle" ||
+    text.includes("two calculator") ||
+    text.includes("2 calculator") ||
+    text.includes("all calculator")
+  ) {
+    return "both";
+  }
+
+  return "";
+}
+
+function accessTypeFromProductName(productName) {
+  const name = String(productName || "")
+    .trim()
+    .toLowerCase();
+
+  if (!name) {
+    return "";
+  }
+
+  if (
+    name.includes("two calculator") ||
+    name.includes("2 calculator") ||
+    name.includes("all calculator")
+  ) {
+    return "both";
+  }
+
+  if (
+    name === "aic calculator" ||
+    name.includes("aic calculator") ||
+    name.includes("available fault current")
+  ) {
+    return "aic";
+  }
+
+  if (
+    name === "optional method generator calculator" ||
+    name === "optional method & generator calculator" ||
+    name.includes("optional method") ||
+    name.includes("generator calculator")
+  ) {
+    return "generator";
+  }
+
+  /*
+    Compatibility with the original product name
+    used before the product was renamed.
+  */
+  if (
+    name ===
+    "loadcalcpro professional membership"
+  ) {
+    return "generator";
+  }
+
+  return "";
+}
+
 function requireAdminKey(req, res, next) {
   if (!ADMIN_API_KEY) {
     return res.status(503).json({
@@ -141,7 +264,10 @@ function requireAdminKey(req, res, next) {
     req.get("X-Admin-Key") || ""
   ).trim();
 
-  if (!providedKey || providedKey !== ADMIN_API_KEY) {
+  if (
+    !providedKey ||
+    providedKey !== ADMIN_API_KEY
+  ) {
     return res.status(401).json({
       success: false,
       message: "Unauthorized."
@@ -156,7 +282,9 @@ async function findMember(email) {
 
   const { data, error } = await supabase
     .from("members")
-    .select("id, email, active, created_at")
+    .select(
+      "id, email, active, aic_access, generator_access, created_at"
+    )
     .eq("email", clean)
     .limit(1)
     .maybeSingle();
@@ -168,23 +296,96 @@ async function findMember(email) {
   return data;
 }
 
-async function addOrReactivateMember(email) {
+function memberAccessValues(member) {
+  const aicAccess =
+    member?.aic_access === true;
+
+  let generatorAccess =
+    member?.generator_access === true;
+
+  /*
+    Backward compatibility:
+
+    Existing members created before the two new
+    access columns were added have active=true
+    while both new columns are false.
+
+    Those original memberships were for the
+    Generator Optional Method Calculator.
+  */
+  if (
+    member?.active === true &&
+    aicAccess === false &&
+    generatorAccess === false
+  ) {
+    generatorAccess = true;
+  }
+
+  return {
+    aicAccess,
+    generatorAccess
+  };
+}
+
+async function setMemberAccess(
+  email,
+  accessType,
+  enabled
+) {
   const clean = cleanEmail(email);
 
   if (!isValidEmail(clean)) {
     throw new Error("Invalid email address.");
   }
 
-  const existingMember = await findMember(clean);
+  const normalizedAccess =
+    normalizeAccessType(accessType);
+
+  if (!normalizedAccess) {
+    throw new Error(
+      "The Payhip product could not be matched to a calculator."
+    );
+  }
+
+  const existingMember =
+    await findMember(clean);
+
+  const current =
+    memberAccessValues(existingMember);
+
+  let aicAccess = current.aicAccess;
+  let generatorAccess =
+    current.generatorAccess;
+
+  if (
+    normalizedAccess === "aic" ||
+    normalizedAccess === "both"
+  ) {
+    aicAccess = enabled;
+  }
+
+  if (
+    normalizedAccess === "generator" ||
+    normalizedAccess === "both"
+  ) {
+    generatorAccess = enabled;
+  }
+
+  const active =
+    aicAccess || generatorAccess;
 
   if (existingMember) {
     const { data, error } = await supabase
       .from("members")
       .update({
-        active: true
+        active,
+        aic_access: aicAccess,
+        generator_access: generatorAccess
       })
       .eq("id", existingMember.id)
-      .select("id, email, active, created_at")
+      .select(
+        "id, email, active, aic_access, generator_access, created_at"
+      )
       .single();
 
     if (error) {
@@ -198,9 +399,13 @@ async function addOrReactivateMember(email) {
     .from("members")
     .insert({
       email: clean,
-      active: true
+      active,
+      aic_access: aicAccess,
+      generator_access: generatorAccess
     })
-    .select("id, email, active, created_at")
+    .select(
+      "id, email, active, aic_access, generator_access, created_at"
+    )
     .single();
 
   if (error) {
@@ -210,40 +415,51 @@ async function addOrReactivateMember(email) {
   return data;
 }
 
-async function deactivateMember(email) {
-  const clean = cleanEmail(email);
-
-  if (!isValidEmail(clean)) {
-    throw new Error("Invalid email address.");
+function memberCanUseCalculator(
+  member,
+  accessType
+) {
+  if (
+    !member ||
+    member.active !== true
+  ) {
+    return false;
   }
 
-  const existingMember = await findMember(clean);
+  const access =
+    memberAccessValues(member);
 
-  if (!existingMember) {
-    return null;
+  if (accessType === "aic") {
+    return access.aicAccess;
   }
 
-  const { data, error } = await supabase
-    .from("members")
-    .update({
-      active: false
-    })
-    .eq("id", existingMember.id)
-    .select("id, email, active, created_at")
-    .single();
-
-  if (error) {
-    throw error;
+  if (accessType === "generator") {
+    return access.generatorAccess;
   }
 
-  return data;
+  if (accessType === "both") {
+    return (
+      access.aicAccess &&
+      access.generatorAccess
+    );
+  }
+
+  /*
+    Backward compatibility for an older login
+    page that sends only the email.
+  */
+  return (
+    access.aicAccess ||
+    access.generatorAccess
+  );
 }
 
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
     app: "LoadCalcPro Access Server",
-    database: "Supabase"
+    database: "Supabase",
+    calculatorAccess: "enabled"
   });
 });
 
@@ -263,7 +479,10 @@ app.get("/health", async (req, res) => {
       database: "connected"
     });
   } catch (error) {
-    console.error("Health check failed:", error);
+    console.error(
+      "Health check failed:",
+      error
+    );
 
     return res.status(500).json({
       status: "error",
@@ -272,135 +491,275 @@ app.get("/health", async (req, res) => {
   }
 });
 
-app.post("/api/access", async (req, res) => {
-  try {
-    const email = cleanEmail(req.body?.email);
+app.post(
+  "/api/access",
+  async (req, res) => {
+    try {
+      const email = cleanEmail(
+        req.body?.email
+      );
 
-    if (!isValidEmail(email)) {
-      return res.status(400).json({
+      if (!isValidEmail(email)) {
+        return res.status(400).json({
+          active: false,
+          message:
+            "Please enter a valid email address."
+        });
+      }
+
+      if (isFakeEmail(email)) {
+        return res.status(400).json({
+          active: false,
+          message:
+            "This email address cannot be used."
+        });
+      }
+
+      const requestedAccess =
+        normalizeAccessType(
+          req.body?.calculator
+        ) ||
+        normalizeAccessType(
+          req.body?.product
+        );
+
+      const member =
+        await findMember(email);
+
+      if (
+        !member ||
+        member.active !== true
+      ) {
+        return res.status(403).json({
+          active: false,
+          message:
+            "Active membership not found."
+        });
+      }
+
+      if (
+        !memberCanUseCalculator(
+          member,
+          requestedAccess
+        )
+      ) {
+        const calculatorName =
+          requestedAccess === "aic"
+            ? "AIC Calculator"
+            : requestedAccess ===
+                "generator"
+              ? "Optional Method Generator Calculator"
+              : "requested calculator";
+
+        return res.status(403).json({
+          active: false,
+          message:
+            `Your membership does not include the ${calculatorName}.`
+        });
+      }
+
+      const access =
+        memberAccessValues(member);
+
+      return res.json({
+        active: true,
+        status: "active",
+        access: true,
+        allowed: true,
+        message: "Access approved.",
+        calculator:
+          requestedAccess || "member",
+        aic_access:
+          access.aicAccess,
+        generator_access:
+          access.generatorAccess
+      });
+    } catch (error) {
+      console.error(
+        "Access check failed:",
+        error
+      );
+
+      return res.status(500).json({
         active: false,
-        message: "Please enter a valid email address."
+        message:
+          "Unable to verify membership right now."
       });
     }
-
-    if (isFakeEmail(email)) {
-      return res.status(400).json({
-        active: false,
-        message: "This email address cannot be used."
-      });
-    }
-
-    const member = await findMember(email);
-
-    if (!member || member.active !== true) {
-      return res.status(403).json({
-        active: false,
-        message: "Active membership not found."
-      });
-    }
-
-    return res.json({
-      active: true,
-      status: "active",
-      message: "Access approved."
-    });
-  } catch (error) {
-    console.error("Access check failed:", error);
-
-    return res.status(500).json({
-      active: false,
-      message: "Unable to verify membership right now."
-    });
   }
-});
+);
 
-app.post("/payhip-webhook", async (req, res) => {
-  try {
-    console.log("Payhip webhook received.");
+app.post(
+  "/payhip-webhook",
+  async (req, res) => {
+    try {
+      console.log(
+        "Payhip webhook received."
+      );
 
-    const eventType = findEventType(req.body);
-    const email = cleanEmail(
-      findEmailInPayload(req.body)
-    );
+      const eventType =
+        findEventType(req.body);
 
-    if (!isValidEmail(email)) {
-      return res.status(400).json({
+      const email = cleanEmail(
+        findEmailInPayload(req.body)
+      );
+
+      const productName =
+        findProductName(req.body);
+
+      const accessType =
+        accessTypeFromProductName(
+          productName
+        );
+
+      if (!isValidEmail(email)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "No valid email was found in the Payhip webhook."
+        });
+      }
+
+      if (!accessType) {
+        console.warn(
+          "Webhook product was not recognized:",
+          productName ||
+            "(missing product name)"
+        );
+
+        /*
+          Return 200 so Payhip does not repeatedly
+          retry an event for a product unrelated to
+          these calculators.
+        */
+        return res.json({
+          success: true,
+          action:
+            "ignored_unrecognized_product",
+          eventType,
+          email,
+          productName
+        });
+      }
+
+      const activateEvents = [
+        "paid",
+        "sale.created",
+        "sale_created",
+        "subscription.created",
+        "subscription_created",
+        "subscription.activated",
+        "subscription_activated",
+        "subscription.payment_succeeded",
+        "subscription_payment_succeeded"
+      ];
+
+      const deactivateEvents = [
+        "refunded",
+        "subscription.deleted",
+        "subscription_deleted",
+        "subscription.cancelled",
+        "subscription.canceled",
+        "subscription_canceled",
+        "subscription_cancelled",
+        "subscription.deactivated",
+        "subscription_deactivated",
+        "subscription.expired",
+        "subscription_expired"
+      ];
+
+      if (
+        activateEvents.includes(
+          eventType
+        )
+      ) {
+        const member =
+          await setMemberAccess(
+            email,
+            accessType,
+            true
+          );
+
+        return res.json({
+          success: true,
+          action:
+            "calculator_access_activated",
+          email: member.email,
+          productName,
+          accessType,
+          active: member.active,
+          aic_access:
+            member.aic_access,
+          generator_access:
+            member.generator_access
+        });
+      }
+
+      if (
+        deactivateEvents.includes(
+          eventType
+        )
+      ) {
+        const member =
+          await setMemberAccess(
+            email,
+            accessType,
+            false
+          );
+
+        return res.json({
+          success: true,
+          action:
+            "calculator_access_deactivated",
+          email: member.email,
+          productName,
+          accessType,
+          active: member.active,
+          aic_access:
+            member.aic_access,
+          generator_access:
+            member.generator_access
+        });
+      }
+
+      return res.json({
+        success: true,
+        action: "ignored_event",
+        eventType,
+        email,
+        productName,
+        accessType
+      });
+    } catch (error) {
+      console.error(
+        "Payhip webhook failed:",
+        error
+      );
+
+      return res.status(500).json({
         success: false,
         message:
-          "No valid email was found in the Payhip webhook."
+          "Webhook processing failed."
       });
     }
-
-    const addEvents = [
-      "paid",
-      "sale.created",
-      "sale_created",
-      "subscription.created",
-      "subscription_created",
-      "subscription.activated",
-      "subscription_activated",
-      "subscription.payment_succeeded",
-      "subscription_payment_succeeded"
-    ];
-
-    const deactivateEvents = [
-      "subscription.deleted",
-      "subscription_deleted",
-      "subscription.cancelled",
-      "subscription.canceled",
-      "subscription_canceled",
-      "subscription_cancelled",
-      "subscription.deactivated",
-      "subscription_deactivated",
-      "subscription.expired",
-      "subscription_expired"
-    ];
-
-    if (addEvents.includes(eventType)) {
-      const member =
-        await addOrReactivateMember(email);
-
-      return res.json({
-        success: true,
-        action: "member_activated",
-        email: member.email,
-        active: member.active
-      });
-    }
-
-    if (deactivateEvents.includes(eventType)) {
-      const member = await deactivateMember(email);
-
-      return res.json({
-        success: true,
-        action: "member_deactivated",
-        email,
-        active: member ? member.active : false
-      });
-    }
-
-    return res.json({
-      success: true,
-      action: "ignored",
-      eventType,
-      email
-    });
-  } catch (error) {
-    console.error("Payhip webhook failed:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Webhook processing failed."
-    });
   }
-});
+);
 
 app.post(
   "/api/add-member",
   requireAdminKey,
   async (req, res) => {
     try {
-      const email = cleanEmail(req.body?.email);
+      const email = cleanEmail(
+        req.body?.email
+      );
+
+      const accessType =
+        normalizeAccessType(
+          req.body?.access ||
+          req.body?.calculator ||
+          "generator"
+        );
 
       if (!isValidEmail(email)) {
         return res.status(400).json({
@@ -412,25 +771,41 @@ app.post(
       if (isFakeEmail(email)) {
         return res.status(400).json({
           success: false,
-          message: "This email address cannot be used."
+          message:
+            "This email address cannot be used."
         });
       }
 
       const member =
-        await addOrReactivateMember(email);
+        await setMemberAccess(
+          email,
+          accessType,
+          true
+        );
 
       return res.json({
         success: true,
-        message: "Member activated.",
+        message:
+          "Member access activated.",
         email: member.email,
-        active: member.active
+        accessType,
+        active: member.active,
+        aic_access:
+          member.aic_access,
+        generator_access:
+          member.generator_access
       });
     } catch (error) {
-      console.error("Add-member failed:", error);
+      console.error(
+        "Add-member failed:",
+        error
+      );
 
       return res.status(500).json({
         success: false,
-        message: "Unable to add member."
+        message:
+          error.message ||
+          "Unable to add member."
       });
     }
   }
@@ -441,7 +816,16 @@ app.post(
   requireAdminKey,
   async (req, res) => {
     try {
-      const email = cleanEmail(req.body?.email);
+      const email = cleanEmail(
+        req.body?.email
+      );
+
+      const accessType =
+        normalizeAccessType(
+          req.body?.access ||
+          req.body?.calculator ||
+          "generator"
+        );
 
       if (!isValidEmail(email)) {
         return res.status(400).json({
@@ -450,22 +834,49 @@ app.post(
         });
       }
 
-      const member = await deactivateMember(email);
+      const existingMember =
+        await findMember(email);
+
+      if (!existingMember) {
+        return res.json({
+          success: true,
+          message:
+            "Member was not found.",
+          email,
+          active: false
+        });
+      }
+
+      const member =
+        await setMemberAccess(
+          email,
+          accessType,
+          false
+        );
 
       return res.json({
         success: true,
-        message: member
-          ? "Member deactivated."
-          : "Member was not found.",
-        email,
-        active: false
+        message:
+          "Member access deactivated.",
+        email: member.email,
+        accessType,
+        active: member.active,
+        aic_access:
+          member.aic_access,
+        generator_access:
+          member.generator_access
       });
     } catch (error) {
-      console.error("Remove-member failed:", error);
+      console.error(
+        "Remove-member failed:",
+        error
+      );
 
       return res.status(500).json({
         success: false,
-        message: "Unable to deactivate member."
+        message:
+          error.message ||
+          "Unable to deactivate member."
       });
     }
   }
