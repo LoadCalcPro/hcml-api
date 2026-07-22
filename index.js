@@ -908,52 +908,23 @@ app.post(
           eventType
         )
       ) {
-        const member =
-          await setMemberAccess(
-            email,
-            accessType,
-            true
-          );
-        let invitation = {
-          invited: false,
-          reason: "not_attempted"
-        };
+       const member =
+  await setMemberAccess(
+    email,
+    accessType,
+    true
+  );
 
-        try {
-          invitation =
-            await inviteMemberToCreatePassword(
-              email
-            );
-        } catch (inviteError) {
-          /*
-            The purchase is still activated even if the
-            invitation email temporarily fails. The error is
-            logged so it can be retried without denying access.
-          */
-          console.error(
-            "Member invitation failed:",
-            inviteError
-          );
-
-          invitation = {
-            invited: false,
-            reason: "invitation_failed"
-          };
-        }
-
-        return res.json({
-          success: true,
-          action:
-            "calculator_access_activated",
-          email: member.email,
-          productName,
-          accessType,
-          active: member.active,
-          aic_access:
-            member.aic_access,
-          generator_access:
-            member.generator_access,
-          invitation
+return res.json({
+  success: true,
+  action: "calculator_access_activated",
+  email: member.email,
+  productName,
+  accessType,
+  active: member.active,
+  aic_access: member.aic_access,
+  generator_access: member.generator_access
+});
         });
       }
 
