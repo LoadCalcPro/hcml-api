@@ -1016,40 +1016,14 @@ app.post(
           true
         );
 
-      let invitation = {
-        invited: false,
-        reason: "not_attempted"
-      };
-
-      try {
-        invitation =
-          await inviteMemberToCreatePassword(
-            email
-          );
-      } catch (inviteError) {
-        console.error(
-          "Manual member invitation failed:",
-          inviteError
-        );
-
-        invitation = {
-          invited: false,
-          reason: "invitation_failed"
-        };
-      }
-
-      return res.json({
-        success: true,
-        message:
-          "Member access activated.",
-        email: member.email,
-        accessType,
-        active: member.active,
-        aic_access:
-          member.aic_access,
-        generator_access:
-          member.generator_access,
-        invitation
+     return res.json({
+  success: true,
+  message: "Member access activated.",
+  email: member.email,
+  accessType,
+  active: member.active,
+  aic_access: member.aic_access,
+  generator_access: member.generator_access
       });
     } catch (error) {
       console.error(
