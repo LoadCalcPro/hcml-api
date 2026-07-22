@@ -924,7 +924,6 @@ return res.json({
   active: member.active,
   aic_access: member.aic_access,
   generator_access: member.generator_access
-});
         });
       }
 
