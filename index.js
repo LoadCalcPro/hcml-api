@@ -10,6 +10,19 @@ const SUPABASE_SERVICE_ROLE_KEY =
 
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 
+/*
+  Version 2 authentication:
+  Supabase Auth securely manages each member's personal password.
+  These URLs may be overridden in Render Environment settings.
+*/
+const SITE_URL =
+  process.env.SITE_URL ||
+  "https://loadcalcpro.github.io/electrical-load-calculator/";
+
+const CREATE_PASSWORD_URL =
+  process.env.CREATE_PASSWORD_URL ||
+  `${SITE_URL}create-password.html`;
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error(
     "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variable."
@@ -29,7 +42,8 @@ const supabase = createClient(
   {
     auth: {
       persistSession: false,
-      autoRefreshToken: false
+      autoRefreshToken: false,
+      detectSessionInUrl: false
     }
   }
 );
@@ -100,7 +114,6 @@ function isFakeEmail(email) {
 
   return blockedDomains.includes(domain);
 }
-
 function findEmailInPayload(body) {
   return (
     body?.email ||
@@ -250,7 +263,6 @@ function accessTypeFromProductName(productName) {
 
   return "";
 }
-
 function requireAdminKey(req, res, next) {
   if (!ADMIN_API_KEY) {
     return res.status(503).json({
@@ -296,6 +308,118 @@ async function findMember(email) {
   return data;
 }
 
+async function findAuthUserByEmail(email) {
+  const clean = cleanEmail(email);
+  let page = 1;
+  const perPage = 1000;
+
+  while (true) {
+    const {
+      data,
+      error
+    } = await supabase.auth.admin.listUsers({
+      page,
+      perPage
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const users = data?.users || [];
+
+    const match = users.find(
+      (user) => cleanEmail(user.email) === clean
+    );
+
+    if (match) {
+      return match;
+    }
+
+    if (users.length < perPage) {
+      return null;
+    }
+
+    page += 1;
+  }
+}
+
+async function inviteMemberToCreatePassword(email) {
+  const clean = cleanEmail(email);
+
+  const existingAuthUser =
+    await findAuthUserByEmail(clean);
+
+  /*
+    Do not send another invitation to an account that
+    already exists. Existing users can use Forgot Password.
+  */
+  if (existingAuthUser) {
+    return {
+      invited: false,
+      reason: "auth_user_already_exists",
+      userId: existingAuthUser.id
+    };
+  }
+
+  const {
+    data,
+    error
+  } = await supabase.auth.admin.inviteUserByEmail(
+    clean,
+    {
+      redirectTo: CREATE_PASSWORD_URL,
+      data: {
+        app: "LoadCalcPro"
+      }
+    }
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  return {
+    invited: true,
+    userId: data?.user?.id || null
+  };
+}
+
+function getBearerToken(req) {
+  const authorization = String(
+    req.get("Authorization") || ""
+  ).trim();
+
+  if (
+    !authorization
+      .toLowerCase()
+      .startsWith("bearer ")
+  ) {
+    return "";
+  }
+
+  return authorization.slice(7).trim();
+}
+
+async function authenticatedUserFromRequest(req) {
+  const token = getBearerToken(req);
+
+  if (!token) {
+    return null;
+  }
+
+  const {
+    data,
+    error
+  } = await supabase.auth.getUser(token);
+
+  if (error || !data?.user) {
+    return null;
+  }
+
+  return data.user;
+}
+
 function memberAccessValues(member) {
   const aicAccess =
     member?.aic_access === true;
@@ -326,7 +450,6 @@ function memberAccessValues(member) {
     generatorAccess
   };
 }
-
 async function setMemberAccess(
   email,
   accessType,
@@ -459,7 +582,7 @@ app.get("/", (req, res) => {
     status: "ok",
     app: "LoadCalcPro Access Server",
     database: "Supabase",
-    calculatorAccess: "enabled"
+    calculatorAccess: "version-2-enabled"
   });
 });
 
@@ -490,7 +613,119 @@ app.get("/health", async (req, res) => {
     });
   }
 });
+/*
+  Version 2 access route:
 
+  The browser must first sign in through Supabase Auth
+  using the member's email and personal password.
+
+  It then sends the Supabase access token in the
+  Authorization header.
+*/
+app.post(
+  "/api/v2/access",
+  async (req, res) => {
+    try {
+      const authUser =
+        await authenticatedUserFromRequest(req);
+
+      if (!authUser?.email) {
+        return res.status(401).json({
+          active: false,
+          authenticated: false,
+          message:
+            "Please sign in with your email and password."
+        });
+      }
+
+      const requestedAccess =
+        normalizeAccessType(
+          req.body?.calculator
+        ) ||
+        normalizeAccessType(
+          req.body?.product
+        );
+
+      if (!requestedAccess) {
+        return res.status(400).json({
+          active: false,
+          authenticated: true,
+          message:
+            "A valid calculator must be selected."
+        });
+      }
+
+      const email =
+        cleanEmail(authUser.email);
+
+      const member =
+        await findMember(email);
+
+      if (
+        !member ||
+        member.active !== true
+      ) {
+        return res.status(403).json({
+          active: false,
+          authenticated: true,
+          message:
+            "Active membership not found."
+        });
+      }
+
+      if (
+        !memberCanUseCalculator(
+          member,
+          requestedAccess
+        )
+      ) {
+        const calculatorName =
+          requestedAccess === "aic"
+            ? "AIC Calculator"
+            : requestedAccess === "generator"
+              ? "Optional Method Generator Calculator"
+              : "requested calculator";
+
+        return res.status(403).json({
+          active: false,
+          authenticated: true,
+          message:
+            `Your membership does not include the ${calculatorName}.`
+        });
+      }
+
+      const access =
+        memberAccessValues(member);
+
+      return res.json({
+        active: true,
+        authenticated: true,
+        status: "active",
+        access: true,
+        allowed: true,
+        message: "Access approved.",
+        email,
+        calculator: requestedAccess,
+        aic_access:
+          access.aicAccess,
+        generator_access:
+          access.generatorAccess
+      });
+    } catch (error) {
+      console.error(
+        "Version 2 access check failed:",
+        error
+      );
+
+      return res.status(500).json({
+        active: false,
+        authenticated: false,
+        message:
+          "Unable to verify membership right now."
+      });
+    }
+  }
+);
 app.post(
   "/api/access",
   async (req, res) => {
@@ -537,7 +772,14 @@ app.post(
         });
       }
 
+      /*
+        If an older page doesn't specify which
+        calculator is being opened, preserve the
+        original behavior and simply allow access
+        to any active member.
+      */
       if (
+        requestedAccess &&
         !memberCanUseCalculator(
           member,
           requestedAccess
@@ -546,10 +788,7 @@ app.post(
         const calculatorName =
           requestedAccess === "aic"
             ? "AIC Calculator"
-            : requestedAccess ===
-                "generator"
-              ? "Optional Method Generator Calculator"
-              : "requested calculator";
+            : "Optional Method Generator Calculator";
 
         return res.status(403).json({
           active: false,
@@ -564,11 +803,8 @@ app.post(
       return res.json({
         active: true,
         status: "active",
-        access: true,
-        allowed: true,
         message: "Access approved.",
-        calculator:
-          requestedAccess || "member",
+        email,
         aic_access:
           access.aicAccess,
         generator_access:
@@ -588,7 +824,6 @@ app.post(
     }
   }
 );
-
 app.post(
   "/payhip-webhook",
   async (req, res) => {
@@ -628,9 +863,9 @@ app.post(
         );
 
         /*
-          Return 200 so Payhip does not repeatedly
-          retry an event for a product unrelated to
-          these calculators.
+          Return status 200 so Payhip does not
+          repeatedly retry an event for a product
+          unrelated to these calculators.
         */
         return res.json({
           success: true,
@@ -679,6 +914,32 @@ app.post(
             accessType,
             true
           );
+        let invitation = {
+          invited: false,
+          reason: "not_attempted"
+        };
+
+        try {
+          invitation =
+            await inviteMemberToCreatePassword(
+              email
+            );
+        } catch (inviteError) {
+          /*
+            The purchase is still activated even if the
+            invitation email temporarily fails. The error is
+            logged so it can be retried without denying access.
+          */
+          console.error(
+            "Member invitation failed:",
+            inviteError
+          );
+
+          invitation = {
+            invited: false,
+            reason: "invitation_failed"
+          };
+        }
 
         return res.json({
           success: true,
@@ -691,7 +952,8 @@ app.post(
           aic_access:
             member.aic_access,
           generator_access:
-            member.generator_access
+            member.generator_access,
+          invitation
         });
       }
 
@@ -783,6 +1045,28 @@ app.post(
           true
         );
 
+      let invitation = {
+        invited: false,
+        reason: "not_attempted"
+      };
+
+      try {
+        invitation =
+          await inviteMemberToCreatePassword(
+            email
+          );
+      } catch (inviteError) {
+        console.error(
+          "Manual member invitation failed:",
+          inviteError
+        );
+
+        invitation = {
+          invited: false,
+          reason: "invitation_failed"
+        };
+      }
+
       return res.json({
         success: true,
         message:
@@ -793,7 +1077,8 @@ app.post(
         aic_access:
           member.aic_access,
         generator_access:
-          member.generator_access
+          member.generator_access,
+        invitation
       });
     } catch (error) {
       console.error(
@@ -804,13 +1089,11 @@ app.post(
       return res.status(500).json({
         success: false,
         message:
-          error.message ||
-          "Unable to add member."
+          "Unable to activate member."
       });
     }
   }
 );
-
 app.post(
   "/api/remove-member",
   requireAdminKey,
@@ -881,7 +1164,6 @@ app.post(
     }
   }
 );
-
 app.use((req, res) => {
   res.status(404).json({
     success: false,
