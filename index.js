@@ -1,4 +1,5 @@
 const express = require("express");
+const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
@@ -9,6 +10,9 @@ const SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+const PAYHIP_API_KEY = String(
+  process.env.PAYHIP_API_KEY || ""
+).trim();
 
 /*
   Version 2 authentication:
@@ -33,6 +37,12 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 if (!ADMIN_API_KEY) {
   console.warn(
     "ADMIN_API_KEY is not set. Manual member management routes will be disabled."
+  );
+}
+
+if (!PAYHIP_API_KEY) {
+  console.warn(
+    "PAYHIP_API_KEY is not set. Payhip webhooks will be rejected until it is configured."
   );
 }
 
@@ -114,6 +124,42 @@ function isFakeEmail(email) {
 
   return blockedDomains.includes(domain);
 }
+
+function isValidPayhipSignature(body) {
+  if (!PAYHIP_API_KEY) {
+    return false;
+  }
+
+  const suppliedSignature = String(
+    body?.signature || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!/^[a-f0-9]{64}$/.test(suppliedSignature)) {
+    return false;
+  }
+
+  const expectedSignature = crypto
+    .createHash("sha256")
+    .update(PAYHIP_API_KEY)
+    .digest("hex");
+
+  const supplied = Buffer.from(
+    suppliedSignature,
+    "utf8"
+  );
+  const expected = Buffer.from(
+    expectedSignature,
+    "utf8"
+  );
+
+  return (
+    supplied.length === expected.length &&
+    crypto.timingSafeEqual(supplied, expected)
+  );
+}
+
 function findEmailInPayload(body) {
   return (
     body?.email ||
@@ -827,6 +873,26 @@ app.post(
       console.log(
         "Payhip webhook received."
       );
+
+      if (!PAYHIP_API_KEY) {
+        console.error(
+          "Payhip webhook rejected: PAYHIP_API_KEY is not configured."
+        );
+        return res.status(503).json({
+          success: false,
+          message: "Webhook verification is not configured."
+        });
+      }
+
+      if (!isValidPayhipSignature(req.body)) {
+        console.warn(
+          "Payhip webhook rejected: invalid signature."
+        );
+        return res.status(401).json({
+          success: false,
+          message: "Invalid webhook signature."
+        });
+      }
 
       const eventType =
         findEventType(req.body);
