@@ -272,6 +272,8 @@ function accessTypeFromProductName(productName) {
   }
 
   if (
+    name === "complete electrical calculation suite" ||
+    name.includes("complete electrical calculation suite") ||
     name.includes("two calculator") ||
     name.includes("2 calculator") ||
     name.includes("all calculator")
