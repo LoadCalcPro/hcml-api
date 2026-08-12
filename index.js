@@ -272,6 +272,8 @@ function accessTypeFromProductName(productName) {
   }
 
   if (
+    name === "electrical calculation suite" ||
+    name.includes("electrical calculation suite") ||
     name === "complete electrical calculation suite" ||
     name.includes("complete electrical calculation suite") ||
     name.includes("two calculator") ||
@@ -662,6 +664,97 @@ app.get("/health", async (req, res) => {
     });
   }
 });
+
+/*
+  Staging-only diagnostic endpoint.
+  It does not create members, send email, or expose secrets.
+*/
+app.get(
+  "/staging/payhip-self-test",
+  async (req, res) => {
+    const checks = {
+      payhipKeyConfigured: Boolean(PAYHIP_API_KEY),
+      signatureVerification: false,
+      subscriptionCreatedParsing: false,
+      aicProductMapping: false,
+      generatorProductMapping: false,
+      suiteProductMapping: false,
+      supabaseConnected: false
+    };
+
+    try {
+      if (PAYHIP_API_KEY) {
+        const syntheticPayload = {
+          signature: crypto
+            .createHash("sha256")
+            .update(PAYHIP_API_KEY)
+            .digest("hex"),
+          type: "subscription.created",
+          customer_email:
+            "staging-self-test@loadcalcprox.invalid",
+          product_name: "AIC Calculator"
+        };
+
+        checks.signatureVerification =
+          isValidPayhipSignature(
+            syntheticPayload
+          );
+
+        checks.subscriptionCreatedParsing =
+          findEventType(syntheticPayload) ===
+          "subscription.created";
+      }
+
+      checks.aicProductMapping =
+        accessTypeFromProductName(
+          "AIC Calculator"
+        ) === "aic";
+
+      checks.generatorProductMapping =
+        accessTypeFromProductName(
+          "Optional Method Generator Calculator"
+        ) === "generator";
+
+      checks.suiteProductMapping =
+        accessTypeFromProductName(
+          "Electrical Calculation Suite"
+        ) === "both";
+
+      const { error } = await supabase
+        .from("members")
+        .select("id")
+        .limit(1);
+
+      checks.supabaseConnected = !error;
+
+      const passed =
+        Object.values(checks).every(Boolean);
+
+      console.log(
+        "Staging Payhip self-test:",
+        passed ? "PASS" : "FAIL",
+        checks
+      );
+
+      return res.status(passed ? 200 : 500).json({
+        status: passed ? "pass" : "fail",
+        environment: "staging",
+        checks
+      });
+    } catch (error) {
+      console.error(
+        "Staging Payhip self-test failed:",
+        error
+      );
+
+      return res.status(500).json({
+        status: "fail",
+        environment: "staging",
+        checks
+      });
+    }
+  }
+);
 
 /*
   Version 2 access route:
