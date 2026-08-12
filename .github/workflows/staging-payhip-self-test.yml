@@ -1,0 +1,37 @@
+name: Staging Payhip Self-Test
+
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch:
+
+jobs:
+  verify-staging-payhip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Render deployment and verify staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://loadcalcpro-hcml-api-staging.onrender.com/staging/payhip-self-test"
+
+          for attempt in {1..20}; do
+            echo "Attempt $attempt: $URL"
+            body="$(curl --silent --show-error --max-time 20 --write-out '\n%{http_code}' "$URL" || true)"
+            code="$(printf '%s\n' "$body" | tail -n1)"
+            json="$(printf '%s\n' "$body" | sed '$d')"
+
+            echo "HTTP $code"
+            echo "$json"
+
+            if [[ "$code" == "200" ]] && printf '%s' "$json" | grep -q '"status":"pass"'; then
+              echo "Staging Payhip self-test PASSED."
+              exit 0
+            fi
+
+            sleep 15
+          done
+
+          echo "Staging Payhip self-test did not pass within the deployment window."
+          exit 1
