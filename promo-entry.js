@@ -9,8 +9,6 @@ const PORT = Number(process.env.PORT || 3000);
 const INTERNAL_PORT = Number(process.env.INTERNAL_BACKEND_PORT || (PORT === 3001 ? 3002 : 3001));
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const SITE_URL = process.env.SITE_URL || 'https://loadcalcprox.com/';
-const CREATE_PASSWORD_URL = process.env.CREATE_PASSWORD_URL || `${SITE_URL.replace(/\/$/, '')}/create-password.html`;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error('Missing Supabase service credentials.');
@@ -54,66 +52,34 @@ function trialCovers(trialAccess, requestedAccess) {
   if (requestedAccess === 'both') return false;
   return trialAccess === requestedAccess;
 }
-function getBearer(req) {
-  const value = String(req.get('Authorization') || '').trim();
-  return value.toLowerCase().startsWith('bearer ') ? value.slice(7).trim() : '';
-}
-async function authenticatedUser(req) {
-  const token = getBearer(req);
-  if (!token) return null;
-  const { data, error } = await supabase.auth.getUser(token);
-  return error ? null : (data?.user || null);
-}
-async function findActiveTrial(email, requestedAccess) {
-  const now = new Date().toISOString();
+async function findTrial(email, code) {
   const { data, error } = await supabase
     .from('promo_trials')
     .select('id,email,promo_code,campaign_name,access_type,redeemed_at,expires_at,status')
     .eq('email', cleanEmail(email))
-    .eq('status', 'active')
-    .gt('expires_at', now)
-    .order('expires_at', { ascending: false });
+    .eq('promo_code', normalizeCode(code))
+    .limit(1)
+    .maybeSingle();
   if (error) throw error;
-  return (data || []).find(row => trialCovers(normalizeAccess(row.access_type), requestedAccess)) || null;
+  return data;
 }
-async function findAuthUserByEmail(email) {
-  const clean = cleanEmail(email);
-  let page = 1;
-  const perPage = 1000;
-  while (true) {
-    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage });
-    if (error) throw error;
-    const users = data?.users || [];
-    const match = users.find(user => cleanEmail(user.email) === clean);
-    if (match) return match;
-    if (users.length < perPage) return null;
-    page += 1;
-  }
+function activeTrial(trial) {
+  return !!trial && trial.status === 'active' && new Date(trial.expires_at) > new Date();
 }
-async function inviteIfNeeded(email) {
-  const existing = await findAuthUserByEmail(email);
-  if (existing) return { invited: false, reason: 'auth_user_already_exists', userId: existing.id };
-  const { data, error } = await supabase.auth.admin.inviteUserByEmail(cleanEmail(email), {
-    redirectTo: CREATE_PASSWORD_URL,
-    data: { app: 'LoadCalcPro', access: 'promo_trial' }
-  });
-  if (error) throw error;
-  return { invited: true, userId: data?.user?.id || null };
-}
-function trialResponse(email, requestedAccess, trial, authenticated) {
-  const access = normalizeAccess(trial.access_type);
+function trialPayload(trial, message) {
+  const access = normalizeAccess(trial.access_type) || 'both';
   return {
+    success: true,
     active: true,
-    authenticated,
-    status: 'trial',
-    access: true,
-    allowed: true,
     trial: true,
-    message: 'Promotional trial access approved.',
-    email: cleanEmail(email),
-    calculator: requestedAccess,
-    promo_code: trial.promo_code,
-    trial_expires_at: trial.expires_at,
+    status: 'trial',
+    message,
+    email: cleanEmail(trial.email),
+    promo_code: normalizeCode(trial.promo_code),
+    campaign_name: trial.campaign_name,
+    access_type: access,
+    redeemed_at: trial.redeemed_at,
+    expires_at: trial.expires_at,
     aic_access: access === 'both' || access === 'aic',
     generator_access: access === 'both' || access === 'generator'
   };
@@ -167,7 +133,7 @@ app.get('/promo-health', async (req, res) => {
   try {
     const { error } = await supabase.from('promo_campaigns').select('id').limit(1);
     if (error) throw error;
-    res.json({ status: 'ok', promoTrials: 'enabled' });
+    res.json({ status: 'ok', promoTrials: 'enabled', login: 'email-plus-code' });
   } catch (error) {
     console.error('Promo health failed:', error);
     res.status(500).json({ status: 'error', promoTrials: 'unavailable' });
@@ -194,21 +160,17 @@ app.post('/api/promo/redeem', async (req, res) => {
     if (campaign.starts_at && now < new Date(campaign.starts_at)) return res.status(403).json({ success: false, message: 'This promotional offer has not started yet.' });
     if (campaign.ends_at && now > new Date(campaign.ends_at)) return res.status(403).json({ success: false, message: 'This promotional offer has ended.' });
 
-    const { data: previous, error: previousError } = await supabase
-      .from('promo_trials')
-      .select('id,redeemed_at,expires_at,status')
-      .eq('email', email)
-      .eq('promo_code', code)
-      .limit(1)
-      .maybeSingle();
-    if (previousError) throw previousError;
+    const previous = await findTrial(email, code);
     if (previous) {
-      const active = previous.status === 'active' && new Date(previous.expires_at) > now;
-      return res.status(active ? 200 : 409).json({
-        success: active,
+      if (activeTrial(previous)) {
+        return res.json(trialPayload(previous, 'Welcome back. Your promotional trial is still active.'));
+      }
+      return res.status(409).json({
+        success: false,
+        active: false,
         already_redeemed: true,
-        active,
-        message: active ? 'Your promotional trial is already active.' : 'This promotional code has already been used with this email address.',
+        expired: true,
+        message: 'Your promotional trial has ended.',
         expires_at: previous.expires_at
       });
     }
@@ -231,45 +193,30 @@ app.post('/api/promo/redeem', async (req, res) => {
       .single();
     if (insertError) throw insertError;
 
-    let invitation = { invited: false, reason: 'not_attempted' };
-    try {
-      invitation = await inviteIfNeeded(email);
-    } catch (inviteError) {
-      console.error('Promo trial invitation failed:', inviteError);
-      invitation = { invited: false, reason: 'invitation_failed' };
-    }
-
-    return res.json({
-      success: true,
-      active: true,
-      message: `Your ${hours}-hour LoadCalcPro trial is active.`,
-      email,
-      promo_code: code,
-      campaign_name: campaign.campaign_name,
-      access_type: accessType,
-      redeemed_at: trial.redeemed_at,
-      expires_at: trial.expires_at,
-      invitation
-    });
+    return res.json(trialPayload(trial, `Your ${hours}-hour LoadCalcPro trial is active.`));
   } catch (error) {
     console.error('Promo redemption failed:', error);
     return res.status(500).json({ success: false, message: 'Unable to activate the promotional trial right now.' });
   }
 });
 
-app.post('/api/v2/access', async (req, res) => {
+app.post('/api/promo/access', async (req, res) => {
   try {
-    const upstream = await proxyWithRetry(req);
-    if (upstream.status < 400) return sendUpstream(res, upstream);
-    const requested = normalizeAccess(req.body?.calculator || req.body?.product);
-    const user = await authenticatedUser(req);
-    if (!user?.email || !requested) return sendUpstream(res, upstream);
-    const trial = await findActiveTrial(user.email, requested);
-    if (!trial) return sendUpstream(res, upstream);
-    return res.json(trialResponse(user.email, requested, trial, true));
+    const email = cleanEmail(req.body?.email);
+    const code = normalizeCode(req.body?.code || req.body?.promo_code);
+    const requested = normalizeAccess(req.body?.calculator || req.body?.product || 'both');
+    if (!validEmail(email) || !code || !requested) {
+      return res.status(400).json({ success: false, active: false, message: 'Email, promotional code, and calculator are required.' });
+    }
+    const trial = await findTrial(email, code);
+    if (!trial) return res.status(403).json({ success: false, active: false, message: 'Promotional trial not found.' });
+    if (!activeTrial(trial)) return res.status(403).json({ success: false, active: false, expired: true, message: 'Your promotional trial has ended.', expires_at: trial.expires_at });
+    const accessType = normalizeAccess(trial.access_type) || 'both';
+    if (!trialCovers(accessType, requested)) return res.status(403).json({ success: false, active: false, message: 'This promotional trial does not include that calculator.' });
+    return res.json({ ...trialPayload(trial, 'Promotional trial access approved.'), calculator: requested, allowed: true, access: true });
   } catch (error) {
-    console.error('Trial-aware v2 access failed:', error);
-    return res.status(500).json({ active: false, authenticated: false, message: 'Unable to verify access right now.' });
+    console.error('Promo access check failed:', error);
+    return res.status(500).json({ success: false, active: false, message: 'Unable to verify promotional access right now.' });
   }
 });
 
@@ -278,11 +225,14 @@ app.post('/api/access', async (req, res) => {
     const upstream = await proxyWithRetry(req);
     if (upstream.status < 400) return sendUpstream(res, upstream);
     const email = cleanEmail(req.body?.email);
+    const code = normalizeCode(req.body?.code || req.body?.promo_code);
     const requested = normalizeAccess(req.body?.calculator || req.body?.product);
-    if (!validEmail(email) || !requested) return sendUpstream(res, upstream);
-    const trial = await findActiveTrial(email, requested);
-    if (!trial) return sendUpstream(res, upstream);
-    return res.json(trialResponse(email, requested, trial, false));
+    if (!validEmail(email) || !code || !requested) return sendUpstream(res, upstream);
+    const trial = await findTrial(email, code);
+    if (!activeTrial(trial)) return sendUpstream(res, upstream);
+    const accessType = normalizeAccess(trial.access_type) || 'both';
+    if (!trialCovers(accessType, requested)) return sendUpstream(res, upstream);
+    return res.json({ ...trialPayload(trial, 'Promotional trial access approved.'), calculator: requested, allowed: true, access: true });
   } catch (error) {
     console.error('Trial-aware legacy access failed:', error);
     return res.status(500).json({ active: false, message: 'Unable to verify access right now.' });
