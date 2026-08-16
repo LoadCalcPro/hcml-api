@@ -1,9 +1,9 @@
 {
   "name": "hcml-api",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "promo-proxy.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node promo-proxy.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
