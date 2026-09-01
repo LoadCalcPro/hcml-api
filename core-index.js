@@ -684,15 +684,18 @@ app.post(
         });
       }
 
-      const requestedAccess =
-        normalizeAccessType(
-          req.body?.calculator
-        ) ||
-        normalizeAccessType(
-          req.body?.product
-        );
+      const requestedValue =
+        req.body?.calculator ??
+        req.body?.product;
 
-      if (!requestedAccess) {
+      const requestedAccess =
+        normalizeAccessType(requestedValue);
+
+      if (
+        requestedValue != null &&
+        String(requestedValue).trim() &&
+        !requestedAccess
+      ) {
         return res.status(400).json({
           active: false,
           authenticated: true,
@@ -717,6 +720,7 @@ app.post(
       }
 
       if (
+        requestedAccess &&
         !memberCanUseCalculator(
           member,
           requestedAccess
@@ -748,7 +752,8 @@ app.post(
         allowed: true,
         message: "Access approved.",
         email,
-        calculator: requestedAccess,
+        calculator:
+          requestedAccess || "all",
         aic_access: access.aicAccess,
         generator_access:
           access.generatorAccess
