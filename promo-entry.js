@@ -3,7 +3,7 @@ const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
-const { newTrialHours, trialDurationLabel } = require('./trial-policy');
+const { STANDARD_TRIAL_HOURS, newTrialHours, trialDurationLabel } = require('./trial-policy');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -134,7 +134,7 @@ app.get('/promo-health', async (req, res) => {
   try {
     const { error } = await supabase.from('promo_campaigns').select('id').limit(1);
     if (error) throw error;
-    res.json({ status: 'ok', promoTrials: 'enabled', login: 'email-plus-code' });
+    res.json({ status: 'ok', promoTrials: 'enabled', login: 'email-plus-code', standardTrialHours: STANDARD_TRIAL_HOURS, trialPolicy: 'new-redemptions-v2' });
   } catch (error) {
     console.error('Promo health failed:', error);
     res.status(500).json({ status: 'error', promoTrials: 'unavailable' });
