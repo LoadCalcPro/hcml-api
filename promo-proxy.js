@@ -3,6 +3,7 @@ const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
+const { newTrialHours, trialDurationLabel } = require('./trial-policy');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -201,7 +202,7 @@ app.post('/api/promo/redeem', async (req, res) => {
       });
     }
 
-    const hours = Math.max(1, Number(campaign.duration_hours) || 24);
+    const hours = newTrialHours(campaign.duration_hours);
     const expiresAt = new Date(now.getTime() + hours * 60 * 60 * 1000).toISOString();
     const accessType = normalizeAccess(campaign.access_type) || 'both';
     const { data: trial, error: insertError } = await supabase
@@ -223,7 +224,7 @@ app.post('/api/promo/redeem', async (req, res) => {
 
     return res.json({
       success: true,
-      message: `Your ${hours}-hour LoadCalcPro trial is active.`,
+      message: `Your ${trialDurationLabel(hours)} LoadCalcPro trial is active.`,
       email,
       promo_code: code,
       campaign_name: campaign.campaign_name,

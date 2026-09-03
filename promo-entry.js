@@ -3,6 +3,7 @@ const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
+const { newTrialHours, trialDurationLabel } = require('./trial-policy');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -175,7 +176,7 @@ app.post('/api/promo/redeem', async (req, res) => {
       });
     }
 
-    const hours = Math.max(1, Number(campaign.duration_hours) || 24);
+    const hours = newTrialHours(campaign.duration_hours);
     const expiresAt = new Date(now.getTime() + hours * 60 * 60 * 1000).toISOString();
     const accessType = normalizeAccess(campaign.access_type) || 'both';
     const { data: trial, error: insertError } = await supabase
@@ -193,7 +194,7 @@ app.post('/api/promo/redeem', async (req, res) => {
       .single();
     if (insertError) throw insertError;
 
-    return res.json(trialPayload(trial, `Your ${hours}-hour LoadCalcPro trial is active.`));
+    return res.json(trialPayload(trial, `Your ${trialDurationLabel(hours)} LoadCalcPro trial is active.`));
   } catch (error) {
     console.error('Promo redemption failed:', error);
     return res.status(500).json({ success: false, message: 'Unable to activate the promotional trial right now.' });
