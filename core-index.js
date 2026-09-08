@@ -272,6 +272,7 @@ function accessTypeFromProductName(productName) {
   }
 
   if (
+    name === "loadcalcpro x professional membership" ||
     name.includes("two calculator") ||
     name.includes("2 calculator") ||
     name.includes("all calculator")
