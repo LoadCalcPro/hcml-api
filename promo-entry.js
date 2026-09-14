@@ -40,6 +40,10 @@ function validEmail(value) {
 function normalizeCode(value) {
   return String(value || '').trim().toUpperCase();
 }
+function canonicalPromoCode(value) {
+  const code = normalizeCode(value);
+  return code === 'IAEI24' ? 'IAEI247' : code;
+}
 function normalizeAccess(value) {
   const text = String(value || '').trim().toLowerCase();
   if (text === 'aic' || text === 'aic-calculator' || text.includes('available fault current')) return 'aic';
@@ -55,11 +59,17 @@ function trialCovers(trialAccess, requestedAccess) {
   return trialAccess === requestedAccess;
 }
 async function findTrial(email, code) {
+  const submittedCode = normalizeCode(code);
+  const canonicalCode = canonicalPromoCode(submittedCode);
+  const acceptedCodes = submittedCode === canonicalCode
+    ? [canonicalCode]
+    : [submittedCode, canonicalCode];
   const { data, error } = await supabase
     .from('promo_trials')
     .select('id,email,promo_code,campaign_name,access_type,redeemed_at,expires_at,status')
     .eq('email', cleanEmail(email))
-    .eq('promo_code', normalizeCode(code))
+    .in('promo_code', acceptedCodes)
+    .order('expires_at', { ascending: false })
     .limit(1)
     .maybeSingle();
   if (error) throw error;
@@ -145,7 +155,8 @@ app.get('/promo-health', async (req, res) => {
 app.post('/api/promo/redeem', async (req, res) => {
   try {
     const email = cleanEmail(req.body?.email);
-    const code = normalizeCode(req.body?.code || req.body?.promo_code);
+    const submittedCode = normalizeCode(req.body?.code || req.body?.promo_code);
+    const code = canonicalPromoCode(submittedCode);
     if (!validEmail(email)) return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
     if (!code) return res.status(400).json({ success: false, message: 'Please enter a promotional code.' });
 
@@ -162,7 +173,7 @@ app.post('/api/promo/redeem', async (req, res) => {
     if (campaign.starts_at && now < new Date(campaign.starts_at)) return res.status(403).json({ success: false, message: 'This promotional offer has not started yet.' });
     if (campaign.ends_at && now > new Date(campaign.ends_at)) return res.status(403).json({ success: false, message: 'This promotional offer has ended.' });
 
-    const previous = await findTrial(email, code);
+    const previous = await findTrial(email, submittedCode);
     if (previous) {
       if (activeTrial(previous)) {
         return res.json(trialPayload(previous, 'Welcome back. Your promotional trial is still active.'));
