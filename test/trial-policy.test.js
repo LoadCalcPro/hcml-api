@@ -18,6 +18,20 @@ for (const file of ['promo-entry.js']) {
   });
 }
 
+for (const file of ['promo-entry.js', 'promo-proxy.js']) {
+  test(`${file}: legacy IAEI24 submissions use the active IAEI247 campaign`, () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    const start = source.indexOf('function normalizeCode');
+    const end = source.indexOf('\nfunction normalizeAccess', start);
+    const context = {};
+    vm.runInNewContext(source.slice(start, end), context);
+    assert.equal(context.canonicalPromoCode('IAEI24'), 'IAEI247');
+    assert.equal(context.canonicalPromoCode(' iaei24 '), 'IAEI247');
+    assert.equal(context.canonicalPromoCode('IAEI247'), 'IAEI247');
+    assert.equal(context.canonicalPromoCode('OTHER'), 'OTHER');
+  });
+}
+
 test('new standard trials use 168 hours and day-based wording', () => {
   for (const value of [24, '24', 120, undefined, null, 0, '', 'invalid']) {
     assert.equal(policy.newTrialHours(value), 168);
@@ -41,7 +55,7 @@ async function redeem(file, previous = null, duration = 24, active = true) {
   const supabase = {
     from(table) {
       const query = {
-        select() { return this; }, eq() { return this; }, limit() { return this; },
+        select() { return this; }, eq() { return this; }, in() { return this; }, order() { return this; }, limit() { return this; },
         async maybeSingle() { return { data: table === 'promo_campaigns' ? campaign : previous }; },
         insert(data) { inserted.push(data); this.data = data; return this; },
         async single() { return { data: { id: 'new', ...this.data } }; }
@@ -58,6 +72,7 @@ async function redeem(file, previous = null, duration = 24, active = true) {
     supabase, Date: Clock, console,
     cleanEmail: value => value.toLowerCase(), validEmail: () => true,
     normalizeCode: value => value.toUpperCase(), normalizeAccess: value => value,
+    canonicalPromoCode: value => value.toUpperCase() === 'IAEI24' ? 'IAEI247' : value.toUpperCase(),
     findTrial: async () => previous,
     activeTrial: trial => trial && trial.status === 'active' && new Date(trial.expires_at) > now,
     trialPayload: (trial, message) => ({ active: true, ...trial, message }),
