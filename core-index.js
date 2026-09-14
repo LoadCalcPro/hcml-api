@@ -259,6 +259,14 @@ function normalizeAccessType(value) {
     return "both";
   }
 
+  if (
+    text === "commercial" ||
+    text === "commercial-calculator" ||
+    text === "commercial calculator"
+  ) {
+    return "commercial";
+  }
+
   return "";
 }
 
@@ -494,7 +502,9 @@ function memberAccessValues(member) {
 
   return {
     aicAccess,
-    generatorAccess
+    generatorAccess,
+    commercialAccess:
+      aicAccess && generatorAccess
   };
 }
 
@@ -616,6 +626,10 @@ function memberCanUseCalculator(
     );
   }
 
+  if (accessType === "commercial") {
+    return access.commercialAccess;
+  }
+
   /*
     Backward compatibility for an older login
     page that sends only the email.
@@ -732,6 +746,8 @@ app.post(
             ? "AIC Calculator"
             : requestedAccess === "generator"
               ? "Optional Method Generator Calculator"
+              : requestedAccess === "commercial"
+                ? "Commercial Calculator"
               : "requested calculator";
 
         return res.status(403).json({
@@ -757,7 +773,9 @@ app.post(
           requestedAccess || "all",
         aic_access: access.aicAccess,
         generator_access:
-          access.generatorAccess
+          access.generatorAccess,
+        commercial_access:
+          access.commercialAccess
       });
     } catch (error) {
       console.error(
@@ -832,6 +850,8 @@ app.post(
             : requestedAccess ===
                 "generator"
               ? "Optional Method Generator Calculator"
+              : requestedAccess === "commercial"
+                ? "Commercial Calculator"
               : "requested calculator";
 
         return res.status(403).json({
@@ -855,7 +875,9 @@ app.post(
         aic_access:
           access.aicAccess,
         generator_access:
-          access.generatorAccess
+          access.generatorAccess,
+        commercial_access:
+          access.commercialAccess
       });
     } catch (error) {
       console.error(
