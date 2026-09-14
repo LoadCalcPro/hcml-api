@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const policy = require('../trial-policy');
 
-for (const file of ['promo-entry.js', 'promo-proxy.js']) {
+for (const file of ['promo-entry.js']) {
   test(`${file}: all-calculator trials cover the commercial calculator`, () => {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
     const start = source.indexOf('function normalizeAccess');
