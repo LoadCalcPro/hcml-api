@@ -44,6 +44,7 @@ function normalizeAccess(value) {
   const text = String(value || '').trim().toLowerCase();
   if (text === 'aic' || text === 'aic-calculator' || text.includes('available fault current')) return 'aic';
   if (text === 'generator' || text.includes('optional method') || text.includes('generator')) return 'generator';
+  if (text === 'commercial' || text === 'commercial-calculator' || text.includes('commercial calculator')) return 'commercial';
   if (text === 'both' || text === 'bundle' || text.includes('all calculator') || text.includes('two calculator') || text.includes('2 calculator')) return 'both';
   return '';
 }
