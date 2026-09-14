@@ -6,11 +6,24 @@ const path = require('node:path');
 const vm = require('node:vm');
 const policy = require('../trial-policy');
 
-test('new standard trials use 120 hours and day-based wording', () => {
+for (const file of ['promo-entry.js', 'promo-proxy.js']) {
+  test(`${file}: all-calculator trials cover the commercial calculator`, () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    const start = source.indexOf('function normalizeAccess');
+    const end = source.indexOf('\nasync function', start);
+    const context = {};
+    vm.runInNewContext(source.slice(start, end), context);
+    assert.equal(context.normalizeAccess('commercial'), 'commercial');
+    assert.equal(context.trialCovers('both', 'commercial'), true);
+  });
+}
+
+test('new standard trials use 168 hours and day-based wording', () => {
   for (const value of [24, '24', 120, undefined, null, 0, '', 'invalid']) {
-    assert.equal(policy.newTrialHours(value), 120);
+    assert.equal(policy.newTrialHours(value), 168);
   }
-  assert.equal(policy.trialDurationLabel(120), '5-day');
+  assert.equal(policy.newTrialHours(120), 168);
+  assert.equal(policy.trialDurationLabel(168), '7-day');
   assert.equal(policy.newTrialHours(48), 48);
   assert.equal(policy.trialDurationLabel(6), '6-hour');
 });
@@ -57,14 +70,14 @@ async function redeem(file, previous = null, duration = 24, active = true) {
 }
 
 for (const file of ['promo-entry.js', 'promo-proxy.js']) {
-  test(`${file}: new legacy campaign redemption expires exactly five days later`, async () => {
+  test(`${file}: new legacy campaign redemption expires exactly seven days later`, async () => {
     const { response, inserted } = await redeem(file);
     assert.equal(response.statusCode, 200);
     assert.equal(inserted.length, 1);
-    assert.equal(inserted[0].expires_at, '2026-09-08T12:00:00.000Z');
+    assert.equal(inserted[0].expires_at, '2026-09-10T12:00:00.000Z');
     assert.equal(inserted[0].redeemed_at, now.toISOString());
     assert.equal(inserted[0].access_type, 'aic');
-    assert.equal(response.body.message, 'Your 5-day LoadCalcPro trial is active.');
+    assert.equal(response.body.message, 'Your 7-day LoadCalcPro trial is active.');
   });
   test(`${file}: returning active trial retains its original deadline`, async () => {
     const previous = { status: 'active', expires_at: '2026-09-04T00:00:00.000Z' };
