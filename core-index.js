@@ -686,9 +686,13 @@ app.get("/health", async (req, res) => {
 app.post(
   "/api/v2/access",
   async (req, res) => {
+    const startedAt = performance.now();
+    let authMs = null;
+    let lookupMs = null;
     try {
       const authUser =
         await authenticatedUserFromRequest(req);
+      authMs = Math.round(performance.now() - startedAt);
 
       if (!authUser?.email) {
         return res.status(401).json({
@@ -721,6 +725,7 @@ app.post(
 
       const email = cleanEmail(authUser.email);
       const member = await findMember(email);
+      lookupMs = Math.round(performance.now() - startedAt - authMs);
 
       if (
         !member ||
@@ -788,6 +793,13 @@ app.post(
         authenticated: false,
         message:
           "Unable to verify membership right now."
+      });
+    } finally {
+      console.info("Membership access timing", {
+        auth_ms: authMs,
+        lookup_ms: lookupMs,
+        total_ms: Math.round(performance.now() - startedAt),
+        status: res.statusCode
       });
     }
   }
